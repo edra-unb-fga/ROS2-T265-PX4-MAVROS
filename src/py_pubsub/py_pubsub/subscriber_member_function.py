@@ -1,122 +1,125 @@
+#!/usr/bin/env python
+
+import rospy
+import tf2_ros
+import tf2_geometry_msgs
+import tf
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+from mavros_msgs.msg import LandingTarget
 import math
-import rclpy
-from rclpy.node import Node
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Quaternion, Vector3
-from rclpy.time import Time
 
-class VisualInertialOdometryPublisher(Node):
-    def __init__(self):
-        super().__init__('VIO_pub')
-        
-        # Publica a odometria visual-inercial no tópico do MAVROS
-        self.odometry_publisher_ = self.create_publisher(Odometry, '/mavros/odometry/out', 10)
-        
-        # Assina o tópico de odometria visual da câmera
-        self.odometry_subscription_ = self.create_subscription(
-            Odometry,
-            '/camera/pose/sample',
-            self.odometry_callback,
-            10
-        )
+def main():
+    rospy.init_node('vision_to_mavros')
 
-        self.timer = self.create_timer(10, self.timer_callback)  # Timer callback every 10 seconds
-        
-    def odometry_callback(self, msg):
-        # Cria a mensagem de odometria MAVROS
-        odom_msg = Odometry()
-        odom_msg.header.stamp = msg.header.stamp
-        odom_msg.header.frame_id = "odom"
+    # Variáveis para navegação precisa
+    camera_pose_publisher = rospy.Publisher('vision_pose', PoseStamped, queue_size=10)
+    body_path_publisher = rospy.Publisher('body_frame/path', Path, queue_size=1)
 
-        # Processa a posição e a rotação (ajustando para a convenção de MAVROS se necessário)
-        position = msg.pose.pose.position
-        rotated_position = Vector3()
-        rotated_position.x = position.x
-        rotated_position.y = -position.y
-        rotated_position.z = -position.z
+    tf_buffer = tf2_ros.Buffer()
+    tf_listener = tf2_ros.TransformListener(tf_buffer)
 
-        odom_msg.pose.pose.position.x = rotated_position.x
-        odom_msg.pose.pose.position.y = rotated_position.y
-        odom_msg.pose.pose.position.z = rotated_position.z
+    msg_body_pose = PoseStamped()
+    body_path = Path()
 
-        # Processa a orientação (ajuste de rotação de 180 graus)
-        orientation = msg.pose.pose.orientation
-        euler_angles = self.quaternion_to_euler(orientation)
-        euler_angles[0] += math.pi  # Rotaciona 180 graus ao redor do eixo X
-        rotated_quaternion = self.euler_to_quaternion(euler_angles)
+    # Parâmetros do launch file ou valores padrões
+    target_frame_id = rospy.get_param('~target_frame_id', '/camera_odom_frame')
+    source_frame_id = rospy.get_param('~source_frame_id', '/camera_link')
+    output_rate = rospy.get_param('~output_rate', 20.0)
+    roll_cam = rospy.get_param('~roll_cam', 0.0)
+    pitch_cam = rospy.get_param('~pitch_cam', 0.0)
+    yaw_cam = rospy.get_param('~yaw_cam', 1.5707963)
+    gamma_world = rospy.get_param('~gamma_world', -1.5707963)
 
-        odom_msg.pose.pose.orientation.x = rotated_quaternion[0]
-        odom_msg.pose.pose.orientation.y = rotated_quaternion[1]
-        odom_msg.pose.pose.orientation.z = rotated_quaternion[2]
-        odom_msg.pose.pose.orientation.w = rotated_quaternion[3]
+    # Variáveis para pouso preciso (opcional)
+    enable_precland = rospy.get_param('~enable_precland', False)
+    precland_target_frame_id = rospy.get_param('~precland_target_frame_id', '/landing_target')
+    precland_camera_frame_id = rospy.get_param('~precland_camera_frame_id', '/camera_fisheye2_optical_frame')
 
-        # Processa as velocidades lineares
-        velocity = msg.twist.twist.linear
-        rotated_velocity = Vector3()
-        rotated_velocity.x = velocity.x
-        rotated_velocity.y = -velocity.y
-        rotated_velocity.z = -velocity.z
+    precland_msg_publisher = None
+    if enable_precland:
+        precland_msg_publisher = rospy.Publisher('landing_raw', LandingTarget, queue_size=10)
 
-        odom_msg.twist.twist.linear.x = rotated_velocity.x
-        odom_msg.twist.twist.linear.y = rotated_velocity.y
-        odom_msg.twist.twist.linear.z = rotated_velocity.z
+    rate = rospy.Rate(output_rate)
 
-        # Processa as velocidades angulares
-        angular_velocity = msg.twist.twist.angular
-        rotated_angular_velocity = Vector3()
-        rotated_angular_velocity.x = angular_velocity.x
-        rotated_angular_velocity.y = -angular_velocity.y
-        rotated_angular_velocity.z = -angular_velocity.z
+    while not rospy.is_shutdown():
+        try:
+            now = rospy.Time.now()
+            transform = tf_buffer.lookup_transform(target_frame_id, source_frame_id, rospy.Time(0))
 
-        odom_msg.twist.twist.angular.x = rotated_angular_velocity.x
-        odom_msg.twist.twist.angular.y = rotated_angular_velocity.y
-        odom_msg.twist.twist.angular.z = rotated_angular_velocity.z
+            position_orig = transform.transform.translation
+            quat_cam = transform.transform.rotation
 
-        # Publica a odometria no tópico MAVROS
-        self.odometry_publisher_.publish(odom_msg)
+            # 1) Rotação do frame original do mundo para o frame com y para frente.
+            position_body_x = math.cos(gamma_world) * position_orig.x + math.sin(gamma_world) * position_orig.y
+            position_body_y = -math.sin(gamma_world) * position_orig.x + math.cos(gamma_world) * position_orig.y
+            position_body_z = position_orig.z
 
-    def timer_callback(self):
-        self.get_logger().info('Publicando odometria visual-inercial no MAVROS')
+            # 2) Rotação do frame da câmera para o frame do corpo
+            quat_cam_to_body_x = tf.transformations.quaternion_from_euler(roll_cam, 0, 0)
+            quat_cam_to_body_y = tf.transformations.quaternion_from_euler(0, pitch_cam, 0)
+            quat_cam_to_body_z = tf.transformations.quaternion_from_euler(0, 0, yaw_cam)
+            quat_rot_z = tf.transformations.quaternion_from_euler(0, 0, -gamma_world)
 
-    def quaternion_to_euler(self, quaternion):
-        # Converte quaternion para ângulos de Euler (roll, pitch, yaw)
-        x = quaternion.x
-        y = quaternion.y
-        z = quaternion.z
-        w = quaternion.w
+            quat_body = tf.transformations.quaternion_multiply(
+                quat_rot_z,
+                tf.transformations.quaternion_multiply(quat_cam, tf.transformations.quaternion_multiply(quat_cam_to_body_x, tf.transformations.quaternion_multiply(quat_cam_to_body_y, quat_cam_to_body_z)))
+            )
 
-        roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x**2 + y**2))
-        pitch = math.asin(2 * (w * y - z * x))
-        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+            # Normaliza o quaternion
+            quat_body = tf.transformations.unit_vector(quat_body)
 
-        return [roll, pitch, yaw]
+            # Prepara a mensagem PoseStamped
+            msg_body_pose.header.stamp = rospy.Time.now()
+            msg_body_pose.header.frame_id = target_frame_id
+            msg_body_pose.pose.position.x = position_body_x
+            msg_body_pose.pose.position.y = position_body_y
+            msg_body_pose.pose.position.z = position_body_z
+            msg_body_pose.pose.orientation.x = quat_body[0]
+            msg_body_pose.pose.orientation.y = quat_body[1]
+            msg_body_pose.pose.orientation.z = quat_body[2]
+            msg_body_pose.pose.orientation.w = quat_body[3]
 
-    def euler_to_quaternion(self, euler_angles):
-        # Converte ângulos de Euler (roll, pitch, yaw) para quaternion
-        roll = euler_angles[0]
-        pitch = euler_angles[1]
-        yaw = euler_angles[2]
+            # Publica a pose da câmera no frame do corpo
+            camera_pose_publisher.publish(msg_body_pose)
 
-        cy = math.cos(yaw * 0.5)
-        sy = math.sin(yaw * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
+            # Publica a trajetória para visualização
+            body_path.header.stamp = msg_body_pose.header.stamp
+            body_path.header.frame_id = msg_body_pose.header.frame_id
+            body_path.poses.append(msg_body_pose)
+            body_path_publisher.publish(body_path)
 
-        w = cy * cp * cr + sy * sp * sr
-        x = cy * cp * sr - sy * sp * cr
-        y = sy * cp * sr + cy * sp * cr
-        z = sy * cp * cr - cy * sp * sr
+        except tf2_ros.LookupException as ex:
+            rospy.logwarn(ex)
+            rospy.sleep(1.0)
 
-        return [x, y, z, w]
+        if enable_precland:
+            try:
+                if tf_buffer.can_transform(precland_camera_frame_id, precland_target_frame_id, rospy.Time(0)):
+                    transform = tf_buffer.lookup_transform(precland_camera_frame_id, precland_target_frame_id, rospy.Time(0))
 
-def main(args=None):
-    rclpy.init(args=args)
-    publisher = VisualInertialOdometryPublisher()
-    rclpy.spin(publisher)
-    publisher.destroy_node()
-    rclpy.shutdown()
+                    msg_landing_target = LandingTarget()
+                    msg_landing_target.header.frame_id = transform.header.frame_id
+                    msg_landing_target.header.stamp = transform.header.stamp
+                    msg_landing_target.target_num = 0
+                    msg_landing_target.frame = LandingTarget.LOCAL_NED
+                    msg_landing_target.type = LandingTarget.VISION_FIDUCIAL
+
+                    msg_landing_target.angle[0] = math.atan2(transform.transform.translation.x, transform.transform.translation.z)
+                    msg_landing_target.angle[1] = math.atan2(transform.transform.translation.y, transform.transform.translation.z)
+                    msg_landing_target.distance = math.sqrt(
+                        transform.transform.translation.x**2 + transform.transform.translation.y**2 + transform.transform.translation.z**2
+                    )
+
+                    # Publica a mensagem de pouso preciso
+                    precland_msg_publisher.publish(msg_landing_target)
+                    rospy.loginfo("Landing target detected")
+
+            except tf2_ros.LookupException as ex:
+                rospy.logwarn(ex)
+                rospy.sleep(1.0)
+
+        rate.sleep()
 
 if __name__ == '__main__':
     main()
