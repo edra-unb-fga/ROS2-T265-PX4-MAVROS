@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from nav_msgs.msg import Odometry
+from mavros_msgs.msg import CompanionProcessStatus
 from rclpy.qos import qos_profile_sensor_data
 
 class VisualInertialPosePublisher(Node):
@@ -16,6 +17,20 @@ class VisualInertialPosePublisher(Node):
             self.odometry_callback,
             qos_profile=qos_profile_sensor_data
         )
+        
+        # Publicação adicional para odometria e status do processo
+        self.odometry_sub = self.create_subscription(
+            Odometry, 
+            '/camera/odom/sample', 
+            self.odometry_callback, 
+            qos_profile=qos_profile_sensor_data
+        )
+        self.odometry_pub = self.create_publisher(Odometry, '/mavros/odometry/out', 5)
+        self.companion_computer_pub = self.create_publisher(CompanionProcessStatus, '/mavros/companion_process/status', 1)
+
+        self.odom_output = Odometry()
+        self.mav_comp_id_msg = CompanionProcessStatus()
+
         self.timer = self.create_timer(0.1, self.timer_callback)  # Timer callback a cada 0.1 segundo (10 Hz)
         
     def odometry_callback(self, msg):
@@ -44,8 +59,17 @@ class VisualInertialPosePublisher(Node):
         # Publicar a pose modificada no tópico do MAVROS
         self.pose_publisher_.publish(pose_msg)
 
+        # Publicar dados de odometria no tópico mavros/odometry/out
+        self.odom_output = msg  # Ajustar ou modificar a mensagem conforme necessário
+        self.odometry_pub.publish(self.odom_output)
+
+        # Publicar status do processo de companion
+        self.mav_comp_id_msg.component = 1  # ID do componente MAVROS
+        self.mav_comp_id_msg.state = CompanionProcessStatus.STATE_ACTIVE
+        self.companion_computer_pub.publish(self.mav_comp_id_msg)
+
     def timer_callback(self):
-        self.get_logger().info('Publicando pose visual-inercial')
+        self.get_logger().info('Publicando pose visual-inercial e odometria')
 
     def quaternion_to_euler(self, quaternion):
         # Converter quaternion para ângulos de Euler (roll, pitch, yaw)
