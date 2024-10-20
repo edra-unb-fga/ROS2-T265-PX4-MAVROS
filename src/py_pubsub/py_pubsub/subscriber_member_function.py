@@ -65,7 +65,7 @@ class VisualInertialPosePublisher(Node):
 
         # Publicar status do processo de companion
         self.mav_comp_id_msg.component = 1  # ID do componente MAVROS
-        self.mav_comp_id_msg.state = CompanionProcessStatus.STATE_ACTIVE
+        self.mav_comp_id_msg.state = CompanionProcessStatus.MAV_STATE_ACTIVE
         self.companion_computer_pub.publish(self.mav_comp_id_msg)
 
     def timer_callback(self):
