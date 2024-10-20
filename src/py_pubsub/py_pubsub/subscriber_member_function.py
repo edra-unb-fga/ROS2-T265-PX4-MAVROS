@@ -9,7 +9,7 @@ from rclpy.time import Time
 class VisualInertialOdometryPublisher(Node):
     def __init__(self):
         super().__init__('VIO_pub')
-        self.odometry_publisher_ = self.create_publisher(Odometry, '/mavros/odometry/in', 10)
+        self.odometry_publisher_ = self.create_publisher(Odometry, '/mavros/vision_pose/pose', 10)
         self.odometry_subscription_ = self.create_subscription(
             Odometry,
             '/t265/pose/sample',
