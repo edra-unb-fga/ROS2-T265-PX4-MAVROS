@@ -37,11 +37,17 @@ class RealsenseBridge(Node):
         self.odom_output.child_frame_id = data.child_frame_id
         self.odometry_pub.publish(self.odom_output)
 
+        # Log para indicar que a odometria está sendo publicada
+        self.get_logger().info('Odometria publicada no tópico /mavros/odometry/out')
+
         # Publicar o status do Companion Computer
         self.mav_comp_id_msg.header.stamp = Clock().now().to_msg() 
         self.mav_comp_id_msg.state = 4  # MAV_STATE_ACTIVE
         self.mav_comp_id_msg.component = 197  # MAV_COMP_ID_VISUAL_INERTIAL_ODOMETRY
         self.companion_computer_pub.publish(self.mav_comp_id_msg)
+
+        # Log para indicar que o status do Companion Computer está sendo publicado
+        self.get_logger().info('Status do Companion Computer publicado no tópico /mavros/companion_process/status')
 
     def broadcast_transform(self):
         # Publicar uma transformação estática entre "odom_frame_ned" e "odom" (ou outro frame que o MAVROS espera)
@@ -62,6 +68,9 @@ class RealsenseBridge(Node):
 
         # Publicar a transformação
         self.br.sendTransform(t)
+
+        # Log para indicar que a transformação está sendo publicada
+        self.get_logger().info('Transformação entre odom_frame_ned e odom publicada')
 
 def main(args=None):
     rclpy.init(args=args)
