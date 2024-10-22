@@ -1,84 +1,122 @@
-#!/usr/bin/env python3
-
+import math
 import rclpy
-from rclpy import qos
 from rclpy.node import Node
-from rclpy.clock import Clock
 from nav_msgs.msg import Odometry
-from mavros_msgs.msg import CompanionProcessStatus
-from tf2_ros import TransformBroadcaster
-from geometry_msgs.msg import TransformStamped
+from rclpy.qos import qos_profile_sensor_data
+from geometry_msgs.msg import Quaternion, Vector3
+from rclpy.time import Time
 
-class RealsenseBridge(Node):
-
+class VisualInertialOdometryPublisher(Node):
     def __init__(self):
-        super().__init__('realsense_bridge')
-        # Subscrição para o tópico de odometria da câmera
-        self.odometry_sub = self.create_subscription(Odometry, '/camera/odom/sample', self.odometry_callback, qos.qos_profile_sensor_data)
+        super().__init__('VIO_pub')
+        # Publicar no tópico de odometria do MAVROS
+        self.odometry_publisher_ = self.create_publisher(Odometry, '/mavros/odometry/out', 10)
         
-        # Publicação de odometria e status do MAVROS
-        self.odometry_pub = self.create_publisher(Odometry, '/mavros/odometry/out', 5)
-        self.companion_computer_pub = self.create_publisher(CompanionProcessStatus, '/mavros/companion_process/status', 1)
+        # Assinar o tópico da odometria do T265
+        self.odometry_subscription_ = self.create_subscription(
+            Odometry,
+            '/t265/pose/sample',
+            self.odometry_callback,
+            qos_profile=qos_profile_sensor_data
+        )
+
+        self.timer = self.create_timer(10, self.timer_callback)  # Timer callback every 10 seconds
         
-        # Inicializar mensagens de saída
-        self.odom_output = Odometry()
-        self.mav_comp_id_msg = CompanionProcessStatus()
+    def odometry_callback(self, msg):
+        # Criar a mensagem de odometria para o MAVROS
+        odom_msg = Odometry()
+        odom_msg.header.stamp = msg.header.stamp
+        odom_msg.header.frame_id = "odom"  # Definindo o frame_id como "odom"
+        odom_msg.child_frame_id = "base_link"  # Definindo o child_frame_id como "base_link"
 
-        # Inicializar um transform broadcaster para frames ausentes
-        self.br = TransformBroadcaster(self)
+        # Set the position information
+        position = msg.pose.pose.position
+        rotated_position = Vector3()
+        rotated_position.x = position.x
+        rotated_position.y = -position.y
+        rotated_position.z = -position.z
 
-        # Timer para enviar transformações de frames fixos
-        self.timer = self.create_timer(0.1, self.broadcast_transform)
+        odom_msg.pose.pose.position.x = rotated_position.x
+        odom_msg.pose.pose.position.y = rotated_position.y
+        odom_msg.pose.pose.position.z = rotated_position.z
 
-    def odometry_callback(self, data):
-        # Copiar dados da mensagem de odometria e ajustar os frames
-        self.odom_output = data
-        self.odom_output.header.frame_id = "odom"  # Definindo o frame_id como "odom"
-        self.odom_output.child_frame_id = "base_link"  # Definindo o child_frame_id como "base_link"
-        
-        # Publicar odometria no tópico MAVROS
-        self.odometry_pub.publish(self.odom_output)
+        # Set the linear velocity information
+        velocity = msg.twist.twist.linear
+        rotated_velocity = Vector3()
+        rotated_velocity.x = velocity.x
+        rotated_velocity.y = -velocity.y
+        rotated_velocity.z = -velocity.z
 
-        # Log para indicar que a odometria está sendo publicada
-        self.get_logger().info('Odometria publicada no tópico /mavros/odometry/out com frame_id=odom e child_frame_id=base_link')
+        odom_msg.twist.twist.linear.x = rotated_velocity.x
+        odom_msg.twist.twist.linear.y = rotated_velocity.y
+        odom_msg.twist.twist.linear.z = rotated_velocity.z
 
-        # Publicar o status do Companion Computer
-        self.mav_comp_id_msg.header.stamp = Clock().now().to_msg()
-        self.mav_comp_id_msg.state = 4  # MAV_STATE_ACTIVE
-        self.mav_comp_id_msg.component = 197  # MAV_COMP_ID_VISUAL_INERTIAL_ODOMETRY
-        self.companion_computer_pub.publish(self.mav_comp_id_msg)
+        # Set the angular velocity information
+        angular_velocity = msg.twist.twist.angular
+        rotated_angular_velocity = Vector3()
+        rotated_angular_velocity.x = angular_velocity.x
+        rotated_angular_velocity.y = -angular_velocity.y
+        rotated_angular_velocity.z = -angular_velocity.z
 
-        # Log para indicar que o status do Companion Computer está sendo publicado
-        self.get_logger().info('Status do Companion Computer publicado no tópico /mavros/companion_process/status')
+        odom_msg.twist.twist.angular.x = rotated_angular_velocity.x
+        odom_msg.twist.twist.angular.y = rotated_angular_velocity.y
+        odom_msg.twist.twist.angular.z = rotated_angular_velocity.z
 
-    def broadcast_transform(self):
-        # Publicar uma transformação estática entre "odom_frame_ned" e "odom" (ou outro frame que o MAVROS espera)
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = "odom_frame_ned"
-        t.child_frame_id = "odom"  # Altere para o frame que você deseja associar
+        # Set the orientation information
+        orientation = msg.pose.pose.orientation
+        euler_angles = self.quaternion_to_euler(orientation)
+        euler_angles[0] += math.pi
+        rotated_quaternion = self.euler_to_quaternion(euler_angles)
 
-        # Definir a transformação (aqui é uma identidade, ajuste conforme necessário)
-        t.transform.translation.x = 0.0
-        t.transform.translation.y = 0.0
-        t.transform.translation.z = 0.0
+        odom_msg.pose.pose.orientation.x = rotated_quaternion[0]
+        odom_msg.pose.pose.orientation.y = rotated_quaternion[1]
+        odom_msg.pose.pose.orientation.z = rotated_quaternion[2]
+        odom_msg.pose.pose.orientation.w = rotated_quaternion[3]
 
-        t.transform.rotation.x = 0.0
-        t.transform.rotation.y = 0.0
-        t.transform.rotation.z = 0.0
-        t.transform.rotation.w = 1.0
+        # Publicar a mensagem de odometria no MAVROS
+        self.odometry_publisher_.publish(odom_msg)
 
-        # Publicar a transformação
-        self.br.sendTransform(t)
+    def timer_callback(self):
+        self.get_logger().info('Publishing visual-inertial odometry')
 
-        # Log para indicar que a transformação está sendo publicada
-        self.get_logger().info('Transformação entre odom_frame_ned e odom publicada')
+    def quaternion_to_euler(self, quaternion):
+        # Converter quaternion para ângulos de Euler (roll, pitch, yaw)
+        x = quaternion.x
+        y = quaternion.y
+        z = quaternion.z
+        w = quaternion.w
+
+        roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x**2 + y**2))
+        pitch = math.asin(2 * (w * y - z * x))
+        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+
+        return [roll, pitch, yaw]
+
+    def euler_to_quaternion(self, euler_angles):
+        # Converter ângulos de Euler (roll, pitch, yaw) para quaternion
+        roll = euler_angles[0]
+        pitch = euler_angles[1]
+        yaw = euler_angles[2]
+
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+
+        w = cy * cp * cr + sy * sp * sr
+        x = cy * cp * sr - sy * sp * cr
+        y = sy * cp * sr + cy * sp * cr
+        z = sy * cp * cr - cy * sp * sr
+
+        return [x, y, z, w]
 
 def main(args=None):
     rclpy.init(args=args)
-    rs_b = RealsenseBridge()
-    rclpy.spin(rs_b)
-    rs_b.destroy_node()
+    publisher = VisualInertialOdometryPublisher()
+    rclpy.spin(publisher)
+    publisher.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
