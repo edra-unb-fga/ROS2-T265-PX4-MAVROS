@@ -31,17 +31,19 @@ class RealsenseBridge(Node):
         self.timer = self.create_timer(0.1, self.broadcast_transform)
 
     def odometry_callback(self, data):
-        # Copiar dados da mensagem de odometria
+        # Copiar dados da mensagem de odometria e ajustar os frames
         self.odom_output = data
-        self.odom_output.header.frame_id = data.header.frame_id
-        self.odom_output.child_frame_id = data.child_frame_id
+        self.odom_output.header.frame_id = "odom"  # Definindo o frame_id como "odom"
+        self.odom_output.child_frame_id = "base_link"  # Definindo o child_frame_id como "base_link"
+        
+        # Publicar odometria no tópico MAVROS
         self.odometry_pub.publish(self.odom_output)
 
         # Log para indicar que a odometria está sendo publicada
-        self.get_logger().info('Odometria publicada no tópico /mavros/odometry/out')
+        self.get_logger().info('Odometria publicada no tópico /mavros/odometry/out com frame_id=odom e child_frame_id=base_link')
 
         # Publicar o status do Companion Computer
-        self.mav_comp_id_msg.header.stamp = Clock().now().to_msg() 
+        self.mav_comp_id_msg.header.stamp = Clock().now().to_msg()
         self.mav_comp_id_msg.state = 4  # MAV_STATE_ACTIVE
         self.mav_comp_id_msg.component = 197  # MAV_COMP_ID_VISUAL_INERTIAL_ODOMETRY
         self.companion_computer_pub.publish(self.mav_comp_id_msg)
